@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "17 * * * *"
       timezone: "Europe/Warsaw"
+
   workflow_dispatch:
 
 permissions:
@@ -14,17 +15,34 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+
   check-price:
+
     runs-on: ubuntu-latest
 
     steps:
+
+      # ==========================================
+      # POBRANIE REPOZYTORIUM
+      # ==========================================
+
       - name: Pobierz repozytorium
         uses: actions/checkout@v4
+
+
+      # ==========================================
+      # PYTHON
+      # ==========================================
 
       - name: Ustaw Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+
+
+      # ==========================================
+      # INSTALACJA BIBLIOTEK
+      # ==========================================
 
       - name: Zainstaluj biblioteki
         run: |
@@ -32,37 +50,81 @@ jobs:
           pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: Sprawdź cenę
+
+      # ==========================================
+      # SPRAWDZENIE CENY TUI
+      # ==========================================
+
+      - name: Sprawdz cene TUI
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
-        run: python monitor_tui.py
 
-- name: Zapisz nową cenę w repozytorium
         run: |
+          python monitor_tui.py
+
+
+      # ==========================================
+      # ZAPIS OSTATNIEJ CENY
+      # ==========================================
+
+      - name: Zapisz ostatnia cene
+        run: |
+
+          echo "Sprawdzam plik ostatnia_cena.json"
+
           if [ ! -f ostatnia_cena.json ]; then
-            echo "Brak pliku ostatnia_cena.json"
+            echo "BLAD: Program nie utworzyl ostatnia_cena.json"
             exit 1
           fi
 
-          git add ostatnia_cena.json
-
-          if git diff --cached --quiet; then
-            echo "Cena bez zmian."
-            exit 0
-          fi
+          echo "Plik istnieje."
 
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Aktualizacja ceny TUI"
-          git push
 
-      - name: Zachowaj dane diagnostyczne przy błędzie
+          git config user.email \
+          "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add ostatnia_cena.json
+
+          # Sprawdzamy, czy plik faktycznie sie zmienil.
+          # Dziala rowniez przy pierwszym utworzeniu pliku.
+
+          if git diff --cached --quiet; then
+
+            echo "Cena bez zmian."
+            echo "Nie trzeba nic zapisywac."
+
+          else
+
+            echo "Cena sie zmienila lub jest to pierwszy pomiar."
+
+            git commit \
+              -m "Aktualizacja ceny TUI"
+
+            git push
+
+            echo "Nowa cena zostala zapisana."
+
+          fi
+
+
+      # ==========================================
+      # DIAGNOSTYKA W RAZIE BLEDU
+      # ==========================================
+
+      - name: Zachowaj dane diagnostyczne
         if: failure()
+
         uses: actions/upload-artifact@v4
+
         with:
+
           name: tui-diagnostyka
+
           path: |
             ostatnia_strona.txt
             ostatni_zrzut.png
+
           if-no-files-found: ignore
+
           retention-days: 3
