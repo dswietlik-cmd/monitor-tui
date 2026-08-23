@@ -37,16 +37,22 @@ jobs:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python monitor_tui.py
 
-      - name: Zapisz nową cenę w repozytorium
+- name: Zapisz nową cenę w repozytorium
         run: |
-          if git diff --quiet -- ostatnia_cena.json; then
+          if [ ! -f ostatnia_cena.json ]; then
+            echo "Brak pliku ostatnia_cena.json"
+            exit 1
+          fi
+
+          git add ostatnia_cena.json
+
+          if git diff --cached --quiet; then
             echo "Cena bez zmian."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ostatnia_cena.json
           git commit -m "Aktualizacja ceny TUI"
           git push
 
