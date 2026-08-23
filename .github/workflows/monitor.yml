@@ -1,0 +1,62 @@
+name: Monitor ceny TUI
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+      timezone: "Europe/Warsaw"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tui-price-monitor
+  cancel-in-progress: false
+
+jobs:
+  check-price:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Zainstaluj biblioteki
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Sprawdź cenę
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python monitor_tui.py
+
+      - name: Zapisz nową cenę w repozytorium
+        run: |
+          if git diff --quiet -- ostatnia_cena.json; then
+            echo "Cena bez zmian."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ostatnia_cena.json
+          git commit -m "Aktualizacja ceny TUI"
+          git push
+
+      - name: Zachowaj dane diagnostyczne przy błędzie
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-diagnostyka
+          path: |
+            ostatnia_strona.txt
+            ostatni_zrzut.png
+          if-no-files-found: ignore
+          retention-days: 3
