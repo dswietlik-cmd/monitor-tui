@@ -9,6 +9,10 @@ import requests
 from playwright.sync_api import sync_playwright
 
 
+# ============================================================
+# KONFIGURACJA
+# ============================================================
+
 TUI_URL = (
     "https://www.tui.pl/wypoczynek/cypr/larnaka/"
     "marlita-hotel-apartments-lca15000/OfferCodeWS/"
@@ -17,63 +21,134 @@ TUI_URL = (
 )
 
 PRICE_FILE = Path("ostatnia_cena.json")
+
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
 
-# Zakres ochronny przed przypadkowym odczytaniem np. raty albo rabatu.
 MIN_PRICE = 1000
 MAX_PRICE = 50000
 
 
+# ============================================================
+# NORMALIZACJA CENY
+# ============================================================
+
 def normalize_price(value: str) -> float:
     value = value.replace("\xa0", " ").strip()
-    value = value.replace(" ", "").replace(".", "").replace(",", ".")
+    value = (
+        value
+        .replace(" ", "")
+        .replace(".", "")
+        .replace(",", ".")
+    )
+
     return float(value)
 
 
+# ============================================================
+# WYSZUKIWANIE CEN
+# ============================================================
+
 def extract_prices(text: str):
-    """
-    Zwraca kandydatów cenowych znalezionych na stronie.
-    Każdy element: (cena, kontekst).
-    """
     pattern = re.compile(
-        r"(?<!\d)(\d{1,3}(?:[ .\u00a0]\d{3})+(?:,\d{2})?"
-        r"|\d{4,6}(?:,\d{2})?)\s*zł",
+        r"(?<!\d)"
+        r"(\d{1,3}(?:[ .\u00a0]\d{3})+(?:,\d{2})?"
+        r"|\d{4,6}(?:,\d{2})?)"
+        r"\s*zł",
         re.IGNORECASE,
     )
 
     candidates = []
 
     for match in pattern.finditer(text):
+
         try:
-            price = normalize_price(match.group(1))
+            price = normalize_price(
+                match.group(1)
+            )
+
         except ValueError:
             continue
 
-        if not (MIN_PRICE <= price <= MAX_PRICE):
+        if not (
+            MIN_PRICE
+            <= price
+            <= MAX_PRICE
+        ):
             continue
 
-        start = max(0, match.start() - 120)
-        end = min(len(text), match.end() + 120)
-        context = " ".join(text[start:end].split())
+        start = max(
+            0,
+            match.start() - 120
+        )
 
-        candidates.append((price, context))
+        end = min(
+            len(text),
+            match.end() + 120
+        )
+
+        context = " ".join(
+            text[start:end].split()
+        )
+
+        candidates.append(
+            (price, context)
+        )
 
     return candidates
 
 
+# ============================================================
+# WYBÓR WŁAŚCIWEJ CENY
+# ============================================================
+
 def choose_offer_price(text: str) -> float:
+
+    # --------------------------------------------------------
+    # Najpierw szukamy dokładnie "Cena razem"
+    # --------------------------------------------------------
+
+    match = re.search(
+        r"Cena\s+razem:\s*"
+        r"(\d{1,3}(?:[ .\u00a0]\d{3})+(?:,\d{2})?"
+        r"|\d{4,6}(?:,\d{2})?)"
+        r"\s*zł",
+        text,
+        re.IGNORECASE
+    )
+
+    if match:
+
+        price = normalize_price(
+            match.group(1)
+        )
+
+        print(
+            f"Znaleziono 'Cena razem': "
+            f"{price:.2f} zł"
+        )
+
+        return price
+
+    # --------------------------------------------------------
+    # Awaryjny mechanizm
+    # --------------------------------------------------------
+
     candidates = extract_prices(text)
 
     if not candidates:
-        raise RuntimeError("Nie znaleziono żadnej sensownej ceny w treści strony.")
 
-    # Preferujemy cenę znajdującą się w pobliżu typowych etykiet ceny końcowej.
+        raise RuntimeError(
+            "Nie znaleziono żadnej sensownej ceny "
+            "w treści strony."
+        )
+
     strong_keywords = [
         "cena za wszystkich",
         "cena całkowita",
         "cena calkowita",
         "łączna cena",
         "laczna cena",
+        "cena razem",
         "razem",
         "do zapłaty",
         "do zaplaty",
@@ -96,43 +171,74 @@ def choose_offer_price(text: str) -> float:
         "od osoby",
         "za osobę",
         "za osobe",
+        "ubezpieczeniem",
     ]
 
     scored = []
 
     for price, context in candidates:
+
         c = context.lower()
+
         score = 0
 
-        if any(k in c for k in strong_keywords):
+        if any(
+            keyword in c
+            for keyword in strong_keywords
+        ):
             score += 10
 
-        if any(k in c for k in weak_keywords):
+        if any(
+            keyword in c
+            for keyword in weak_keywords
+        ):
             score += 2
 
-        if any(k in c for k in negative_keywords):
+        if any(
+            keyword in c
+            for keyword in negative_keywords
+        ):
             score -= 5
 
-        scored.append((score, price, context))
+        scored.append(
+            (
+                score,
+                price,
+                context
+            )
+        )
 
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    scored.sort(
+        key=lambda x: (
+            x[0],
+            x[1]
+        ),
+        reverse=True
+    )
 
-    print("Kandydaci cenowi:")
+    print(
+        "Kandydaci cenowi:"
+    )
+
     for score, price, context in scored[:10]:
-        print(f"  score={score:>2}  cena={price:.2f} zł  kontekst={context[:220]}")
 
-    best_score, best_price, _ = scored[0]
+        print(
+            f"score={score:>2} "
+            f"cena={price:.2f} zł "
+            f"kontekst={context[:220]}"
+        )
 
-    # Jeśli nie znaleźliśmy silnego kontekstu, wybieramy najwyższą
-    # sensowną cenę. Dla ceny całej wycieczki jest to bezpieczniejsze
-    # niż wybieranie najniższej kwoty ze strony.
-    if best_score <= 0:
-        best_price = max(price for price, _ in candidates)
+    return float(
+        scored[0][1]
+    )
 
-    return float(best_price)
 
+# ============================================================
+# COOKIES
+# ============================================================
 
 def accept_cookies(page):
+
     labels = [
         "Akceptuję",
         "Akceptuj",
@@ -143,54 +249,107 @@ def accept_cookies(page):
     ]
 
     for label in labels:
+
         try:
+
             button = page.get_by_role(
                 "button",
-                name=re.compile(re.escape(label), re.IGNORECASE),
+                name=re.compile(
+                    re.escape(label),
+                    re.IGNORECASE
+                ),
             )
+
             if button.count() > 0:
-                button.first.click(timeout=2500)
-                page.wait_for_timeout(1500)
+
+                button.first.click(
+                    timeout=2500
+                )
+
+                page.wait_for_timeout(
+                    1500
+                )
+
                 return
+
         except Exception:
             pass
 
 
+# ============================================================
+# POBIERANIE CENY TUI
+# ============================================================
+
 def get_price() -> float:
-    print("Otwieram TUI...")
+
+    print(
+        "Otwieram TUI..."
+    )
 
     with sync_playwright() as p:
+
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage"],
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage"
+            ],
         )
 
         page = browser.new_page(
-            viewport={"width": 1920, "height": 1080},
+            viewport={
+                "width": 1920,
+                "height": 1080
+            },
             locale="pl-PL",
         )
 
         try:
+
             page.goto(
                 TUI_URL,
                 wait_until="domcontentloaded",
                 timeout=120_000,
             )
 
-            accept_cookies(page)
+            accept_cookies(
+                page
+            )
 
-            # TUI pobiera ofertę dynamicznie.
-            # Czekamy maksymalnie ok. 35 sekund na pojawienie się kwoty.
+            print(
+                "Czekam na załadowanie ceny..."
+            )
+
+            body_text = ""
+
+            # maksymalnie około 35 sekund
             for _ in range(7):
-                page.wait_for_timeout(5000)
-                body_text = page.locator("body").inner_text()
 
-                if re.search(r"\d[\d .\u00a0]*\s*zł", body_text, re.IGNORECASE):
+                page.wait_for_timeout(
+                    5000
+                )
+
+                body_text = (
+                    page.locator("body")
+                    .inner_text()
+                )
+
+                if re.search(
+                    r"\d[\d .\u00a0]*\s*zł",
+                    body_text,
+                    re.IGNORECASE
+                ):
                     break
 
-            body_text = page.locator("body").inner_text()
+            body_text = (
+                page.locator("body")
+                .inner_text()
+            )
 
-            Path("ostatnia_strona.txt").write_text(
+            # diagnostyka
+            Path(
+                "ostatnia_strona.txt"
+            ).write_text(
                 body_text,
                 encoding="utf-8",
             )
@@ -200,106 +359,265 @@ def get_price() -> float:
                 full_page=True,
             )
 
-            price = choose_offer_price(body_text)
-            print(f"Wybrana cena: {price:.2f} zł")
+            price = choose_offer_price(
+                body_text
+            )
+
+            print(
+                f"Wybrana cena: "
+                f"{price:.2f} zł"
+            )
+
             return price
 
         finally:
+
             browser.close()
 
 
+# ============================================================
+# ODCZYT POPRZEDNIEJ CENY
+# ============================================================
+
 def load_previous_price():
+
     if not PRICE_FILE.exists():
         return None
 
     try:
-        data = json.loads(PRICE_FILE.read_text(encoding="utf-8"))
-        return float(data["price"])
+
+        data = json.loads(
+            PRICE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        return float(
+            data["price"]
+        )
+
     except Exception:
         return None
 
 
-def save_price(price: float):
+# ============================================================
+# ZAPIS NOWEJ CENY
+# ============================================================
+
+def save_price(
+    price: float
+):
+
     data = {
         "price": price,
-        "checked_at_utc": datetime.now(timezone.utc).isoformat(),
+        "checked_at_utc":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
         "url": TUI_URL,
     }
 
     PRICE_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
+        json.dumps(
+            data,
+            ensure_ascii=False,
+            indent=2
+        ),
         encoding="utf-8",
     )
 
 
-def send_ntfy(old_price: float, new_price: float):
+# ============================================================
+# POWIADOMIENIE NTFY
+# ============================================================
+
+def send_ntfy(
+    old_price: float,
+    new_price: float
+):
+
     if not NTFY_TOPIC:
+
         raise RuntimeError(
-            "Brak NTFY_TOPIC. Dodaj sekret NTFY_TOPIC w GitHub Actions."
+            "Brak NTFY_TOPIC. "
+            "Dodaj sekret NTFY_TOPIC "
+            "w GitHub Actions."
         )
 
-    difference = new_price - old_price
+    difference = (
+        new_price - old_price
+    )
+
+    # --------------------------------------------------------
+    # CENA SPADŁA
+    # --------------------------------------------------------
 
     if difference < 0:
-        title = "TUI - CENA SPADŁA"
-        body = (
-            f"Marlita Hotel Apartments\n"
+
+        title = (
+            "TUI - CENA SPADŁA"
+        )
+
+        message = (
+            "Marlita Hotel Apartments\n"
             f"Było: {old_price:.0f} zł\n"
             f"Jest: {new_price:.0f} zł\n"
-            f"Spadek: {abs(difference):.0f} zł"
+            f"Spadek: "
+            f"{abs(difference):.0f} zł"
         )
-        priority = "high"
-        tags = "moneybag,chart_with_downwards_trend"
+
+        priority = 4
+
+        tags = [
+            "moneybag",
+            "chart_with_downwards_trend"
+        ]
+
+    # --------------------------------------------------------
+    # CENA WZROSŁA
+    # --------------------------------------------------------
+
     else:
-        title = "TUI - CENA WZROSŁA"
-        body = (
-            f"Marlita Hotel Apartments\n"
+
+        title = (
+            "TUI - CENA WZROSŁA"
+        )
+
+        message = (
+            "Marlita Hotel Apartments\n"
             f"Było: {old_price:.0f} zł\n"
             f"Jest: {new_price:.0f} zł\n"
-            f"Wzrost: {difference:.0f} zł"
+            f"Wzrost: "
+            f"{difference:.0f} zł"
         )
-        priority = "default"
-        tags = "warning,chart_with_upwards_trend"
+
+        priority = 3
+
+        tags = [
+            "warning",
+            "chart_with_upwards_trend"
+        ]
+
+    data = {
+        "topic": NTFY_TOPIC,
+        "title": title,
+        "message": message,
+        "priority": priority,
+        "tags": tags,
+        "click": TUI_URL
+    }
 
     response = requests.post(
-        f"https://ntfy.sh/{NTFY_TOPIC}",
-        data=body.encode("utf-8"),
-        headers={
-            "Title": title,
-            "Priority": priority,
-            "Tags": tags,
-            "Click": TUI_URL,
-        },
-        timeout=30,
+        "https://ntfy.sh",
+        json=data,
+        timeout=30
     )
-    response.raise_for_status()
-    print("Powiadomienie ntfy wysłane.")
 
+    response.raise_for_status()
+
+    print(
+        "Powiadomienie ntfy wysłane."
+    )
+
+
+# ============================================================
+# PROGRAM GŁÓWNY
+# ============================================================
 
 def main():
-    old_price = load_previous_price()
-    new_price = get_price()
+
+    old_price = (
+        load_previous_price()
+    )
+
+    new_price = (
+        get_price()
+    )
+
+    # --------------------------------------------------------
+    # PIERWSZE URUCHOMIENIE
+    # --------------------------------------------------------
 
     if old_price is None:
-        print("Pierwszy pomiar. Zapisuję cenę bez wysyłania powiadomienia.")
-        save_price(new_price)
+
+        print(
+            "Pierwszy pomiar."
+        )
+
+        print(
+            "Zapisuję cenę bez wysyłania "
+            "powiadomienia."
+        )
+
+        save_price(
+            new_price
+        )
+
         return
 
-    print(f"Poprzednia cena: {old_price:.2f} zł")
-    print(f"Nowa cena:       {new_price:.2f} zł")
+    print(
+        f"Poprzednia cena: "
+        f"{old_price:.2f} zł"
+    )
+
+    print(
+        f"Nowa cena:       "
+        f"{new_price:.2f} zł"
+    )
+
+    # --------------------------------------------------------
+    # BRAK ZMIANY
+    # --------------------------------------------------------
 
     if new_price == old_price:
-        print("Cena bez zmian. Nic nie wysyłam.")
+
+        print(
+            "Cena bez zmian."
+        )
+
+        print(
+            "Nic nie wysyłam."
+        )
+
         return
 
-    print("Cena się zmieniła.")
-    send_ntfy(old_price, new_price)
-    save_price(new_price)
+    # --------------------------------------------------------
+    # CENA SIĘ ZMIENIŁA
+    # --------------------------------------------------------
 
+    print(
+        "Cena się zmieniła."
+    )
+
+    send_ntfy(
+        old_price,
+        new_price
+    )
+
+    save_price(
+        new_price
+    )
+
+    print(
+        "Nowa cena została zapisana."
+    )
+
+
+# ============================================================
+# START
+# ============================================================
 
 if __name__ == "__main__":
+
     try:
+
         main()
+
     except Exception as exc:
-        print(f"BŁĄD: {exc}", file=sys.stderr)
+
+        print(
+            f"BŁĄD: {exc}",
+            file=sys.stderr
+        )
+
         raise
