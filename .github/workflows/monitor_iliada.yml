@@ -1,0 +1,73 @@
+name: Monitor ceny TUI - Iliada
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "27 * * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tui-price-monitor-iliada
+  cancel-in-progress: false
+
+jobs:
+  check-price:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobierz repozytorium
+        uses: actions/checkout@v4
+
+      - name: Ustaw Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Zainstaluj biblioteki
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: Sprawdz cene TUI - Iliada
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: python monitor_iliada.py
+
+      - name: Zapisz ostatnia cene Iliada
+        run: |
+          if [ ! -f ostatnia_cena_iliada.json ]; then
+            echo "BLAD: Brak ostatnia_cena_iliada.json"
+            exit 1
+          fi
+
+          cp ostatnia_cena_iliada.json /tmp/ostatnia_cena_iliada.json
+          git fetch origin main
+          git reset --hard origin/main
+          cp /tmp/ostatnia_cena_iliada.json ostatnia_cena_iliada.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add ostatnia_cena_iliada.json
+
+          if git diff --cached --quiet; then
+            echo "Cena bez zmian."
+            exit 0
+          fi
+
+          git commit -m "Aktualizacja ceny TUI - Iliada"
+          git push origin main
+
+      - name: Zachowaj diagnostyke przy bledzie
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-iliada-diagnostyka
+          path: |
+            ostatnia_strona_iliada.txt
+            ostatni_zrzut_iliada.png
+          if-no-files-found: ignore
+          retention-days: 3
